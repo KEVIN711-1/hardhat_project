@@ -4,7 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "remixd:start": "nohup remixd -s . > remixd.log 2>&1 &",
+    "remixd:stop": "pkill -f 'remixd -s'",
+    "remixd:log": "tail -f remixd.log",
+    "remixd:status": "pgrep -f 'remixd -s' && echo 'Running' || echo 'Stopped'",
+    "remixd:restart": "npm run remixd:stop && sleep 2 && npm run remixd:start"
   },
   "keywords": [],
   "author": "",
@@ -24,5 +29,10 @@
     "mocha": "^11.7.5",
     "typescript": "~5.8.0"
   },
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@chainlink/contracts": "^1.5.0",
+    "@openzeppelin/contracts": "^5.4.0",
+    "@openzeppelin/contracts-upgradeable": "^5.4.0"
+  }
 }
