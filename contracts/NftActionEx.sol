@@ -5,7 +5,7 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-
+import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 // import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
 import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
@@ -13,7 +13,7 @@ import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interf
 // import "hardhat/console.sol";
 
 //contract NftAuction is Initializable, UUPSUpgradeable {
-contract NftAuction is Initializable {
+contract NftAuction is Initializable, IERC721Receiver {
 
     // 结构体
     struct Auction {
@@ -53,15 +53,27 @@ contract NftAuction is Initializable {
         //为什么是地址类型，不应该是uint256吗 ？
         // 存的是"问价格的地方"，不是"价格本身"
         // 每次需要价格时，去这个地方问最新的
+
+        // ETH ->  USD 询价地址0x694AA1769357215DE4FAC081bf1f309aDC325306
+        // USDC -> USD 询价地址0xA2F78ab2355fe2f984D808B5CeE7FD0A93D5270E 
         priceFeeds[tokenAddress] = AggregatorV3Interface(_priceFeed);
     }
+
+    event PriceDebug(
+        uint256 indexed auctionId,
+        address tokenAddress,
+        uint256 tokenPrice,
+        uint256 bidAmount,
+        uint256 bidValueUSD,
+        uint256 startPriceUSD
+    );
 
     // 此函数的作用是什么?
     // 因为支持多币种拍卖，
     // 各个币种之间汇率不一样不能直接比较数字大小，
     // 需要获取该币种汇率转换后的USD金额比较
-    // ETH -> USD => 1766 7512 1800 => 1766.75121800
-    // USDC -> USD => 9999 4000 => 0.99994000
+    // ETH -> USD => 3011 8508 7500 => 3011.85087500
+    // USDC -> USD => 9997 5000 => 0.99975000
     
     function getChainlinkDataFeedLatestAnswer(
         address tokenAddress
@@ -86,7 +98,7 @@ contract NftAuction is Initializable {
         // 获取该币种最新的美元汇率
         return answer;
     }
-
+    
     // 创建拍卖
     function createAuction(
         uint256 _duration, //时间
@@ -101,7 +113,7 @@ contract NftAuction is Initializable {
         require(_startPrice > 0, "Start price must be greater than 0");
 
         // 转移NFT到合约
-        // IERC721(_nftAddress).approve(address(this), _tokenId);
+        //IERC721(_nftAddress).approve(address(this), _tokenId);
         IERC721(_nftAddress).safeTransferFrom(msg.sender, address(this), _tokenId);
         //创建者将拍平 转移到当前的 拍卖市场保管
 
@@ -126,11 +138,11 @@ contract NftAuction is Initializable {
     // TODO: ERC20 也能参加
     function placeBid(
         uint256 _auctionID,     // 参与竞拍的任务id
-        uint256 amount,         // 出价
         address _tokenAddress   // 想要拍买的NFT产品？
     ) external payable {
-        // 统一的价值尺度
-
+        uint256 amount = msg.value; // 出价
+        uint256 tokenPrice;
+        // 统一的价值尺度 美金
         // ETH 是 ？ 美金
         // 1个 USDC 是 ？ 美金
 
@@ -145,34 +157,41 @@ contract NftAuction is Initializable {
         // 判断出价是否大于当前最高出价
 
 
-        uint payValue;
+        uint payValueUsd;
         if (_tokenAddress != address(0)) {
             // 处理 ERC20
             // 检查是否是 ERC20 资产
             // 将用户的代币乘以 与美元的汇率
             // 获取汇率转换后的价格payValue， 在后续竞拍中统一单位比较
-            payValue = amount * uint(getChainlinkDataFeedLatestAnswer(_tokenAddress));
+
+            // tokenPrice 有8位小数点 3011 8508 7500
+            tokenPrice = uint256(getChainlinkDataFeedLatestAnswer(_tokenAddress))/10**8;
         } else {
             // 处理 ETH
-            amount = msg.value;
-
             // 以太坊中约定俗成用零地址0x000...000代表原生ETH
-            payValue = amount * uint(getChainlinkDataFeedLatestAnswer(address(0)));
+            tokenPrice = uint256(getChainlinkDataFeedLatestAnswer(address(0)))/10**8;
         }
-        
+        // WEI -> ETH /10**8
+        // ETH -> USD = eth * (tokenPrice/10*8) 
+        payValueUsd = (amount * tokenPrice) / 10**18;
+
+            // 4. 记录汇率信息
+        emit PriceDebug(
+            _auctionID,
+            _tokenAddress,
+            tokenPrice,
+            amount,
+            payValueUsd,
+            auction.startPrice
+        );
         // 此处发现错误，起拍价应该默认统一美元才行，此处又进行了一次汇率换算
         // uint startPriceValue = auction.startPrice *
         //     uint(getChainlinkDataFeedLatestAnswer(auction.tokenAddress));
 
         // uint highestBidValue = auction.highestBid *
         //     uint(getChainlinkDataFeedLatestAnswer(auction.tokenAddress));
-
-        // require(
-        //     payValue >= startPriceValue && payValue > highestBidValue,
-        //     "Bid must be higher than the current highest bid"
-        // );
         require(
-            payValue >= auction.startPrice && payValue > auction.startPrice,
+            payValueUsd >= auction.startPrice && payValueUsd > auction.highestBid,
             "Bid must be higher than the current highest bid"
         );
 
@@ -189,7 +208,14 @@ contract NftAuction is Initializable {
                 // auction.tokenAddress = _tokenAddress;
                 // 给最高出价者退回ETH
                 // payable(auction.highestBidder).transfer(auction.highestBid);
-                (bool success, ) = payable(auction.highestBidder).call{value: auction.highestBid}("this is the transfer");
+
+                // 将美金转换位wei 退款
+                // 1美元 = 10^18 / 3011.85087500
+                // 10**18/(tokenPrice/10**8）
+                // highestWei = highestBid*10**18/(tokenPrice/10**8);
+                // 应该先乘后除，避免精度丢失
+                uint256 highestWei = (auction.highestBid * 10**18) / tokenPrice;
+                (bool success, ) = payable(auction.highestBidder).call{value: highestWei}("");
                 require(success, "transfer failed");
 
             } else {
@@ -207,7 +233,7 @@ contract NftAuction is Initializable {
         // 更新当前拍买任务进度
         // 更新最高出价者、出价金额以及货币类型
         auction.tokenAddress = _tokenAddress;
-        auction.highestBid = amount;
+        auction.highestBid = payValueUsd;
         auction.highestBidder = msg.sender;
     }
 
@@ -247,12 +273,16 @@ contract NftAuction is Initializable {
     //     require(msg.sender == admin, "Only admin can upgrade");
     // }
 
-    // function onERC721Received(
-    //     address operator,
-    //     address from,
-    //     uint256 tokenId,
-    //     bytes calldata data
-    // ) external pure returns (bytes4) {
-    //     return this.onERC721Received.selector;
-    // }
+    // 删除参数名
+    // ✅ 优点：最简洁，明确表示"我不需要这些参数"
+    // ✅ 符合标准：函数签名完全匹配接口要求
+    // ✅ 节省Gas：不执行任何额外操作
+    function onERC721Received(
+        address,
+        address,
+        uint256 ,
+        bytes calldata
+    ) external pure override returns (bytes4) {
+        return this.onERC721Received.selector;
+    }
 }
